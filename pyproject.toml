@@ -22,6 +22,9 @@ seaborn = "^0.13.2"
 wandb = "^0.16.5"
 termcolor = "^2.4.0"
 reportlab = "^4.1.0"
+bitsandbytes = "^0.43.0"
+auto-gptq = "^0.7.1"
+optimum = "^1.18.0"
 
 [tool.poetry.group.dev.dependencies]
 ipywidgets = "^8.1.1"

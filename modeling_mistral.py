@@ -55,7 +55,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from transformers.models.mistral.configuration_mistral import MistralConfig
+from configuration_mistral import MistralConfig
 
 
 if is_flash_attn_2_available():
@@ -1801,9 +1801,9 @@ class MistralForCausalLM(MistralPreTrainedModel):
                     
                 # don't allow it to predict the thinking token
                 if self.tokenizer_has_start_thought_token:                    
-                    rm_logits[..., self.start_token_id] = -1e10
+                    rm_logits[..., self.start_token_id] = torch.finfo(rm_logits.dtype).min
                 if self.tokenizer_has_end_thought_token:
-                    rm_logits[..., self.end_token_id] = -1e10
+                    rm_logits[..., self.end_token_id] = torch.finfo(rm_logits.dtype).min
                 probabilities = rm_logits
                 if probabilities_2d is not None:
                     prev_probabilities_2d = probabilities_2d.clone()
