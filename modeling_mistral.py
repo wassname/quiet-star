@@ -1308,66 +1308,14 @@ class MistralForCausalLM(MistralPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        thought_chance=0.5,
     ):
+        """custom forward function used for quiet-star."""
         batch_size, seq_len = input_ids.shape
 
         # Save the original input_ids and attention_mask for later use
         original_input_ids = input_ids.clone()
         original_attention_mask = attention_mask.clone() if attention_mask is not None else None
-
-        # Append the start thought token to the input sequence
-        start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
-        input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
-        seq_len += 1
-
-        # Update the attention mask
-        if attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
-
-        # Generate the continuation
-        continuation_length = self.n_ahead - 2
-        new_key_values = past_key_values
-        
-        start_time = time.time()
-        for continuation_idx in range(continuation_length):
-            outputs = self.model(
-                input_ids=input_ids if continuation_idx == 0 else next_token_id.unsqueeze(-1).to(input_ids.device),
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=new_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=True,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
-            new_key_values = outputs.past_key_values
-
-            hidden_states = outputs[0]
-
-            logits = self.lm_head(hidden_states)
-            logits = logits[:, -1, :]  # Only consider the last token
-
-            # Apply Gumbel-Softmax to the logits
-            next_token_logits = F.gumbel_softmax(logits, tau=self.gumbel_temperature, hard=True, dim=-1)
-            next_token_id = torch.argmax(next_token_logits, dim=-1)
-
-            # Append the generated token to the input sequence
-            input_ids = torch.cat([input_ids, next_token_id.unsqueeze(-1).to(input_ids.device)], dim=-1)
-            seq_len += 1
-
-            # Update the attention mask
-            if attention_mask is not None:
-                attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
-
-        # Append the end thought token to the input sequence
-        end_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|endthought|>")
-        input_ids = torch.cat([input_ids, torch.tensor([[end_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
-        seq_len += 1
-
-        # Update the attention mask
-        if attention_mask is not None:
-            attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
 
         # Get the hidden states before and after the thought
         outputs_before = self.model(
@@ -1382,30 +1330,134 @@ class MistralForCausalLM(MistralPreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states_before = outputs_before[0][:, -1:, :]
+        raw_next_id = hidden_states_before[0, -1].argmax(-1)
+        start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
 
-        # two new tokens: last continuation token and end thought token
-        outputs_after = self.model(
-            input_ids=torch.cat([next_token_id.unsqueeze(-1).to(input_ids.device), torch.tensor(end_thought_token_id).unsqueeze(-1).unsqueeze(-1).to(input_ids.device)], dim=-1),
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=new_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-        hidden_states_after = outputs_after[0][:, -1:, :]
+        #thinking is slow so we do it 1) when the model tried to <|startthought|> 2) when the mixing weight is high 3) randomly
+        mixing_weight = self.talk_head[0](torch.cat([hidden_states_before, hidden_states_before], dim=-1))
 
-        # Apply the talk head to get the mixing weight
-        mixing_weight = self.talk_head[0](torch.cat([hidden_states_before, hidden_states_after], dim=-1))
+        if (raw_next_id==start_thought_token_id) or (mixing_weight>0.055):
+            # MODEL IS TRYING TO THINK
+            do_thought = True
+        else:
+            # it's too slow to run thoughts all the time, and it can get repetitive
+            do_thought = random.random()>thought_chance
 
-        # Apply the mixing weight to the hidden states
-        mixed_hidden_states = (1 - mixing_weight) * hidden_states_before + mixing_weight * hidden_states_after
+        if do_thought:
+            # Append the start thought token to the input sequence
+            input_ids = torch.cat([input_ids, torch.tensor([[start_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
+            seq_len += 1
 
-        # Apply the language model head to get the final logits
-        logits = self.lm_head(mixed_hidden_states)
-        return logits
+            # Update the attention mask
+            if attention_mask is not None:
+                attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
+
+            # Generate the continuation
+            continuation_length = self.n_ahead - 2
+            new_key_values = past_key_values
+            
+            start_time = time.time()
+            for continuation_idx in range(continuation_length):
+                outputs = self.model(
+                    input_ids=input_ids if continuation_idx == 0 else next_token_id.unsqueeze(-1).to(input_ids.device),
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=new_key_values,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=True,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                )
+                new_key_values = outputs.past_key_values
+
+                hidden_states = outputs[0]
+                logits = self.lm_head(hidden_states)
+
+                
+                # work out if it has start and end tokens
+                self.tokenizer_has_start_thought_token = True
+                self.tokenizer_has_end_thought_token = True
+                if self.start_token_id is None:
+                    self.start_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
+                    if self.start_token_id == 0:
+                        self.start_token_id = self.tokenizer.bos_token_id
+                        self.tokenizer_has_start_thought_token = False
+                if self.end_token_id is None:
+                    self.end_token_id = self.tokenizer.convert_tokens_to_ids("<|endthought|>")
+                    if self.end_token_id == 0:
+                        self.end_token_id = self.tokenizer.eos_token_id
+                        self.tokenizer_has_end_thought_token = False
+
+                # don't allow it to predict the thinking token
+                if self.tokenizer_has_start_thought_token:                    
+                    logits[..., self.start_token_id] = torch.finfo(hidden_states.dtype).min
+                if self.tokenizer_has_end_thought_token:
+                    logits[..., self.end_token_id] = torch.finfo(hidden_states.dtype).min
+
+                
+                logits = logits[:, -1, :]  # Only consider the last token
+
+                # Apply Gumbel-Softmax to the logits
+                next_token_logits = F.gumbel_softmax(logits, tau=self.gumbel_temperature, hard=True, dim=-1)
+                next_token_id = torch.argmax(next_token_logits, dim=-1)
+
+                # Append the generated token to the input sequence
+                input_ids = torch.cat([input_ids, next_token_id.unsqueeze(-1).to(input_ids.device)], dim=-1)
+                seq_len += 1
+
+                # Update the attention mask
+                if attention_mask is not None:
+                    attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
+
+            # Append the end thought token to the input sequence
+            end_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|endthought|>")
+            input_ids = torch.cat([input_ids, torch.tensor([[end_thought_token_id]] * batch_size).to(input_ids.device)], dim=-1)
+            seq_len += 1
+
+            # Update the attention mask
+            if attention_mask is not None:
+                attention_mask = torch.cat([attention_mask, torch.ones((batch_size, 1)).to(attention_mask.device)], dim=-1)
+
+            # two new tokens: last continuation token and end thought token
+            outputs_after = self.model(
+                input_ids=torch.cat([next_token_id.unsqueeze(-1).to(input_ids.device), torch.tensor(end_thought_token_id).unsqueeze(-1).unsqueeze(-1).to(input_ids.device)], dim=-1),
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=new_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+            hidden_states_after = outputs_after[0][:, -1:, :]
+
+            # Apply the talk head to get the mixing weight
+            mixing_weight = self.talk_head[0](torch.cat([hidden_states_before, hidden_states_after], dim=-1))
+
+            # Apply the mixing weight to the hidden states
+            mixed_hidden_states = (1 - mixing_weight) * hidden_states_before + mixing_weight * hidden_states_after
+
+            # Apply the language model head to get the final logits
+            logits = self.lm_head(mixed_hidden_states)
+
+            thought_ids = input_ids#[:, original_input_ids.shape[1]:]
+            # print(1, logits.shape, next_token_logits.shape)
+        else:
+            # next_token_logits = logits = hidden_states_before[:, -1]
+            logits = self.lm_head(hidden_states_before)
+            thought_ids = None
+            mixing_weight = None
+            # print(2, logits.shape)
+
+        # Apply Gumbel-Softmax to the logits
+        next_token_logits = F.gumbel_softmax(logits, tau=self.gumbel_temperature, hard=True, dim=-1)
+        next_token_id = torch.argmax(next_token_logits, dim=-1)
+
+        output_ids = torch.cat([original_input_ids, next_token_id], dim=-1)
+
+        return dict(logits=logits, output_ids=output_ids, thought_ids=thought_ids, mixing_weight=mixing_weight)
 
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -1599,6 +1651,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
             base_embeddings = self.model.embed_tokens.weight
             if self.train_only_thinking_embedding:
                 base_embeddings = base_embeddings.detach()
+        
         # # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         fwd_iters = 1 if self.original_mode else self.n_ahead + self.n_ahead_talk - 1
         for ahead_idx in range(fwd_iters):
