@@ -1334,14 +1334,20 @@ class MistralForCausalLM(MistralPreTrainedModel):
         start_thought_token_id = self.tokenizer.convert_tokens_to_ids("<|startthought|>")
 
         #thinking is slow so we do it 1) when the model tried to <|startthought|> 2) when the mixing weight is high 3) randomly
-        mixing_weight = self.talk_head[0](torch.cat([hidden_states_before, hidden_states_before], dim=-1))
+        naive_mixing_weight = self.talk_head[0](torch.cat([hidden_states_before, hidden_states_before], dim=-1))
 
-        if (raw_next_id==start_thought_token_id) or (mixing_weight>0.055):
+        thought_type = 'none'
+        if (raw_next_id==start_thought_token_id):
             # MODEL IS TRYING TO THINK
             do_thought = True
+            thought_type = 'startthought'
+        elif naive_mixing_weight>0.055:
+            do_thought = True
+            thought_type = 'naive_mixing_weight'
         else:
             # it's too slow to run thoughts all the time, and it can get repetitive
-            do_thought = random.random()>thought_chance
+            do_thought = random.random()<thought_chance
+            thought_type = 'random'
 
         if do_thought:
             # Append the start thought token to the input sequence
@@ -1457,7 +1463,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         output_ids = torch.cat([original_input_ids, next_token_id], dim=-1)
 
-        return dict(logits=logits, output_ids=output_ids, thought_ids=thought_ids, mixing_weight=mixing_weight)
+        return dict(logits=logits, output_ids=output_ids, thought_ids=thought_ids, mixing_weight=mixing_weight, thought_type=thought_type)
 
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
