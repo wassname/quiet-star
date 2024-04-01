@@ -1308,6 +1308,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        temperature: float = 1.0,
         thought_chance=0.5,
     ):
         """custom forward function used for quiet-star."""
@@ -1341,7 +1342,7 @@ class MistralForCausalLM(MistralPreTrainedModel):
             # MODEL IS TRYING TO THINK
             do_thought = True
             thought_type = 'startthought'
-        elif naive_mixing_weight>0.055:
+        elif naive_mixing_weight>0.057:
             do_thought = True
             thought_type = 'naive_mixing_weight'
         else:
@@ -1404,9 +1405,9 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 
                 logits = logits[:, -1, :]  # Only consider the last token
 
-                # Apply Gumbel-Softmax to the logits
-                next_token_logits = F.gumbel_softmax(logits, tau=self.gumbel_temperature, hard=True, dim=-1)
-                next_token_id = torch.argmax(next_token_logits, dim=-1)
+                # Apply Softmax to the logits
+                next_token_probs = F.log_softmax(logits / temperature, dim=-1)
+                next_token_id = torch.argmax(next_token_probs, dim=-1)
 
                 # Append the generated token to the input sequence
                 input_ids = torch.cat([input_ids, next_token_id.unsqueeze(-1).to(input_ids.device)], dim=-1)
@@ -1450,6 +1451,10 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
             thought_ids = input_ids#[:, original_input_ids.shape[1]:]
             # print(1, logits.shape, next_token_logits.shape)
+
+            next_token_without_thought = F.log_softmax(self.lm_head(hidden_states_before) / temperature, dim=-1).argmax(-1)
+            next_token_with_thought = F.log_softmax(logits / temperature, dim=-1).argmax(-1)
+            next_token_with_only_thought = F.log_softmax(self.lm_head(hidden_states_after) / temperature, dim=-1).argmax(-1)
         else:
             # next_token_logits = logits = hidden_states_before[:, -1]
             logits = self.lm_head(hidden_states_before)
@@ -1457,13 +1462,21 @@ class MistralForCausalLM(MistralPreTrainedModel):
             mixing_weight = None
             # print(2, logits.shape)
 
+            next_token_without_thought = None
+            next_token_with_only_thought = None
+            next_token_with_thought = None
+
         # Apply Gumbel-Softmax to the logits
-        next_token_logits = F.gumbel_softmax(logits, tau=self.gumbel_temperature, hard=True, dim=-1)
-        next_token_id = torch.argmax(next_token_logits, dim=-1)
+        next_token_probs = F.log_softmax(logits / temperature, dim=-1)
+        next_token_id = torch.argmax(next_token_probs, dim=-1)
+
+        
+        
 
         output_ids = torch.cat([original_input_ids, next_token_id], dim=-1)
 
-        return dict(logits=logits, output_ids=output_ids, thought_ids=thought_ids, mixing_weight=mixing_weight, thought_type=thought_type)
+        return dict(logits=logits, output_ids=output_ids, thought_ids=thought_ids, mixing_weight=mixing_weight, thought_type=thought_type, next_token_with_thought=next_token_with_thought,
+                    next_token_with_only_thought=next_token_with_only_thought, next_token_without_thought=next_token_without_thought)
 
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
