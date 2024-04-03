@@ -1,11 +1,6 @@
 # Experiments with seeing the secret thoughts of LLM's
 
 
-Main notebook: https://github.com/wassname/quiet-star/blob/main/main2.ipynb
-Tweet thread: https://twitter.com/wassname/status/1774709219884949928/photo/1
-
-![image](https://github.com/wassname/quiet-star/assets/1103714/bf4d66a3-979b-442b-a407-fc312d118800)
-
 I had a play with Quiet-STaR
 
 It has "private thoughts" that have never been tuned to human preferences. I was curious about it's private thought.
@@ -19,6 +14,12 @@ The thoughts share these properties with normal Chain Of Thought
 - it's sometimes garbled (normal for a small 7b parameter model)
 
 I think all these differences could become more distince in a larger model. And it's fascinating to see thoughts that have been trained to be effective, not to please humans. However some of the thoughts contradict each other, so it would be even nicer if we could somehow make sure that they are used, but this is an open research question.
+
+Links:
+- Main notebook: https://github.com/wassname/quiet-star/blob/main/main2.ipynb
+- Tweet thread: https://twitter.com/wassname/status/1774709219884949928/photo/1
+
+![image](https://github.com/wassname/quiet-star/assets/1103714/bf4d66a3-979b-442b-a407-fc312d118800)
 
 # Quiet-STaR
 
